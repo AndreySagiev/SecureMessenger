@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SecureMessenger</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>SecureMessenger</h1>
+      <p class="subtitle">Микросервисный мессенджер · курс «Безопасность ВС»</p>
+    </header>
+
+    <section id="auth-section" class="card">
+      <h2>Вход / Регистрация</h2>
+      <div class="tabs">
+        <button class="tab active" data-tab="login">Вход</button>
+        <button class="tab" data-tab="register">Регистрация</button>
+      </div>
+
+      <form id="login-form" class="form">
+        <input type="text" id="login-username" placeholder="Username" required />
+        <input type="password" id="login-password" placeholder="Password" required />
+        <button type="submit">Войти</button>
+      </form>
+
+      <form id="register-form" class="form hidden">
+        <input type="text" id="reg-username" placeholder="Username" required />
+        <input type="email" id="reg-email" placeholder="Email" required />
+        <input type="password" id="reg-password" placeholder="Password (min 6)" required />
+        <button type="submit">Зарегистрироваться</button>
+      </form>
+      <p id="auth-msg" class="msg"></p>
+    </section>
+
+    <section id="chat-section" class="hidden">
+      <div class="user-bar">
+        <div>
+          <span>Вы: <strong id="current-user"></strong></span>
+          <span class="user-id" id="current-user-id" title="Нажмите, чтобы скопировать"></span>
+        </div>
+        <button id="logout-btn">Выйти</button>
+      </div>
+
+      <div class="chat-layout">
+        <aside class="conversations">
+          <h3>Чаты</h3>
+          <button id="new-chat-btn">+ Новый чат</button>
+          <ul id="conv-list"></ul>
+        </aside>
+
+        <main class="messages-area">
+          <div class="chat-header">
+            <span id="chat-title">Выберите чат</span>
+            <div class="header-actions">
+              <button id="rename-chat-btn" class="small-btn hidden">Переименовать</button>
+              <button id="delete-chat-btn" class="small-btn danger hidden">Удалить чат</button>
+            </div>
+          </div>
+          <div id="messages" class="messages"></div>
+          <form id="send-form" class="send-form">
+            <input type="text" id="msg-input" placeholder="Сообщение..." autocomplete="off" />
+            <button type="submit">Отправить</button>
+          </form>
+        </main>
+      </div>
+    </section>
+
+    <!-- Модалка создания чата -->
+    <div id="new-chat-modal" class="modal hidden">
+      <div class="modal-content">
+        <h3>Новый чат</h3>
+        <p class="hint">Выберите пользователя (показаны username и ID):</p>
+        <ul id="users-list" class="users-list"></ul>
+        <input type="text" id="new-chat-name" placeholder="Название чата (необязательно)" />
+        <div class="modal-actions">
+          <button id="create-chat-confirm">Создать</button>
+          <button id="create-chat-cancel" class="secondary">Отмена</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=20261115"></script>
+</body>
+</html>

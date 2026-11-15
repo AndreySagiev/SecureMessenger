@@ -1,0 +1,290 @@
+# SecureMessenger — микросервисный мессенджер
+
+
+services:
+  # ========== INFRASTRUCTURE ==========
+  postgres-users:
+    image: postgres:16-alpine
+    container_name: sm-postgres-users
+    environment:
+      POSTGRES_USER: users_user
+      POSTGRES_PASSWORD: users_pass
+      POSTGRES_DB: users_db
+    volumes:
+      - ./db/users/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - users_data:/var/lib/postgresql/data
+    networks:
+      - db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U users_user -d users_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-messages-primary:
+    image: postgres:16-alpine
+    container_name: sm-postgres-messages-primary
+    environment:
+      POSTGRES_USER: msg_user
+      POSTGRES_PASSWORD: msg_pass
+      POSTGRES_DB: messages_db
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: repl_pass
+    volumes:
+      - ./db/messages/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./db/messages/primary-setup.sh:/docker-entrypoint-initdb.d/02-primary-setup.sh:ro
+      - messages_primary_data:/var/lib/postgresql/data
+    networks:
+      - db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U msg_user -d messages_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command: >
+      postgres
+      -c wal_level=replica
+      -c max_wal_senders=3
+      -c max_replication_slots=3
+      -c hot_standby=on
+
+  postgres-messages-replica:
+    image: postgres:16-alpine
+    container_name: sm-postgres-messages-replica
+    environment:
+      POSTGRES_USER: msg_user
+      POSTGRES_PASSWORD: msg_pass
+      POSTGRES_DB: messages_db
+      PGUSER: msg_user
+    volumes:
+      - messages_replica_data:/var/lib/postgresql/data
+      - ./db/messages/replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    networks:
+      - db-net
+    depends_on:
+      postgres-messages-primary:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/replica-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U msg_user -d messages_db || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: sm-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - cache-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ========== RabbitMQ HA Cluster ==========
+  # Два узла в одном кластере. Очереди durable. При падении одного узла
+  # клиент (RobustConnection) переподключается на живой узел.
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: sm-rabbitmq
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: mq_user
+      RABBITMQ_DEFAULT_PASS: mq_pass
+      RABBITMQ_ERLANG_COOKIE: SecureMessengerCookie42
+      RABBITMQ_NODENAME: rabbit@rabbitmq
+    ports:
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - mq-net
+      - frontend-net          # management UI с хоста
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+  rabbitmq2:
+    image: rabbitmq:3.13-management-alpine
+    container_name: sm-rabbitmq2
+    hostname: rabbitmq2
+    environment:
+      RABBITMQ_DEFAULT_USER: mq_user
+      RABBITMQ_DEFAULT_PASS: mq_pass
+      RABBITMQ_ERLANG_COOKIE: SecureMessengerCookie42
+      RABBITMQ_NODENAME: rabbit@rabbitmq2
+    volumes:
+      - rabbitmq2_data:/var/lib/rabbitmq
+      - ./db/rabbitmq/join-cluster.sh:/join-cluster.sh:ro
+    networks:
+      - mq-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    # После старта вступаем в кластер
+    command: >
+      bash -c "
+        rabbitmq-server &
+        sleep 15
+        /bin/bash /join-cluster.sh || true
+        wait
+      "
+
+  # ========== APPLICATION SERVICES (масштабируемые) ==========
+  auth-service:
+    build: ./services/auth
+    environment:
+      DATABASE_URL: postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: super-secret-jwt-key-change-me-in-prod-32chars
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_MINUTES: 60
+      SERVICE_NAME: auth-service
+    depends_on:
+      postgres-users:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - backend-net
+      - db-net
+      - cache-net
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  message-service:
+    build: ./services/message
+    environment:
+      DATABASE_URL: postgresql+asyncpg://msg_user:msg_pass@postgres-messages-primary:5432/messages_db
+      REDIS_URL: redis://redis:6379/1
+      # Primary узел; RobustConnection + cluster обеспечивают отказоустойчивость
+      RABBITMQ_URL: amqp://mq_user:mq_pass@rabbitmq:5672/
+      JWT_SECRET: super-secret-jwt-key-change-me-in-prod-32chars
+      JWT_ALGORITHM: HS256
+      SERVICE_NAME: message-service
+      AUTH_SERVICE_URL: http://auth-service:8000
+    depends_on:
+      postgres-messages-primary:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - backend-net
+      - db-net
+      - cache-net
+      - mq-net
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+  # ========== LOAD BALANCER (HAProxy) ==========
+  haproxy:
+    image: haproxy:2.9-alpine
+    container_name: sm-haproxy
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - auth-service
+      - message-service
+    networks:
+      - frontend-net
+      - backend-net
+    ports:
+      - "8404:8404"   # HAProxy stats
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ========== GATEWAY + FRONTEND ==========
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: sm-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./frontend:/usr/share/nginx/html:ro
+    depends_on:
+      - haproxy
+    networks:
+      - frontend-net
+
+  # ========== LOAD TESTING (Locust) ==========
+  locust:
+    build: ./loadtest
+    container_name: sm-locust
+    ports:
+      - "8089:8089"
+    environment:
+      TARGET_HOST: http://nginx
+    volumes:
+      - ./loadtest:/mnt/locust
+    networks:
+      - frontend-net
+    depends_on:
+      - nginx
+    command: >
+      locust -f /mnt/locust/locustfile.py
+      --host=http://nginx
+      --web-host=0.0.0.0
+      --web-port=8089
+
+
+volumes:
+  users_data:
+  messages_primary_data:
+  messages_replica_data:
+  redis_data:
+  rabbitmq_data:
+  rabbitmq2_data:
+
+networks:
+  frontend-net:
+    driver: bridge
+    name: sm-frontend-net
+  backend-net:
+    driver: bridge
+    name: sm-backend-net
+  db-net:
+    driver: bridge
+    name: sm-db-net
+    internal: true
+  cache-net:
+    driver: bridge
+    name: sm-cache-net
+    internal: true
+  mq-net:
+    driver: bridge
+    name: sm-mq-net
+    internal: true
