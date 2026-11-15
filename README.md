@@ -43,21 +43,6 @@ docker compose ps
 - Auth **не** имеет `sm-mq-net` → не может достучаться до RabbitMQ.
 - Message **не** имеет credentials от users DB (разные БД).
 
-Проверка изоляции:
-
-```bash
-chmod +x scripts/*.sh
-./scripts/demo_network_isolation.sh
-```
-
-Скрипт показывает:
-1. Сегменты сетей и membership.
-2. Разрешённые соединения проходят.
-3. Запрещённые — не проходят.
-4. Временное отключение сети → сервис теряет доступ, затем восстановление.
-
----
-
 ## Основные API (через gateway http://localhost:8080)
 
 **Auth** (`/api/auth/...`):
