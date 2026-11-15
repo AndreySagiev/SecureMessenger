@@ -193,4 +193,4 @@ secure-messenger/
 └── loadtest/                   # Locust
 ```
 
-Секреты в compose — только для локального запуска.
+
